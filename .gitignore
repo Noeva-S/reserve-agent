@@ -9,3 +9,4 @@ reserve_agent/_uploaded.xlsx
 cloudflared.log
 tools/
 *.log
+*.zip
