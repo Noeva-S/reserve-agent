@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+reserve_agent/_uploaded.xlsx
+.env
+.streamlit/secrets.toml
+.streamlit_pid
+.cloudflared_pid
+cloudflared.log
+tools/
+*.log
