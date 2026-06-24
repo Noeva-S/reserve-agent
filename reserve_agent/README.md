@@ -34,7 +34,7 @@ streamlit run reserve_agent/app.py
 方式一：在项目根目录新建 `.env` 文件：
 
 ```env
-DEEPSEEK_API_KEY=你的DeepSeekKey
+DEEPSEEK_API_KEY=
 DEEPSEEK_MODEL=deepseek-chat
 ```
 
