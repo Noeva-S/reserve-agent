@@ -11,7 +11,6 @@ import requests
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 
-# 如果你不想用 .env 或页面密码框，可以把 DeepSeek API Key 填在这里：
 # 注意：填入真实 key 后，不要把这个文件发到公共仓库或群文件里。
 
 
