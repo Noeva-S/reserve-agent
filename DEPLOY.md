@@ -14,11 +14,7 @@
 reserve_agent/app.py
 ```
 
-6. 在 `Advanced settings` 或 App 的 `Secrets` 中加入：
-
-```toml
-DEEPSEEK_API_KEY = "你的 DeepSeek API Key"
-```
+6. 在 `Advanced settings` 或 App 的 `Secrets` 中新增一个名为 `DEEPSEEK_API_KEY` 的密钥，值填写你的 DeepSeek API key。
 
 7. 点击 Deploy。
 
