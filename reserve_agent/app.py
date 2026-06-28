@@ -12,7 +12,7 @@ PROJECT_ROOT = CURRENT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from reserve_agent.data_processing import (  # noqa: E402
+from reserve_agent.data.loader import (  # noqa: E402
     build_cumulative_triangle,
     find_default_workbook,
     list_excel_sheets,
@@ -21,15 +21,15 @@ from reserve_agent.data_processing import (  # noqa: E402
     quality_report,
     triangle_to_display,
 )
-from reserve_agent.explanation import (  # noqa: E402
+from reserve_agent.agent.explanation import (  # noqa: E402
     build_llm_payload,
     generate_agent_explanation,
     generate_data_diagnosis,
     generate_method_notes,
     generate_result_summary,
 )
-from reserve_agent.llm_client import build_reserving_prompt, call_deepseek, get_deepseek_key  # noqa: E402
-from reserve_agent.reserving import run_reserving_models  # noqa: E402
+from reserve_agent.agent.llm_client import build_reserving_prompt, call_deepseek, get_deepseek_key  # noqa: E402
+from reserve_agent.models.reserving import run_reserving_models  # noqa: E402
 
 
 def read_secret(name: str) -> str | None:
