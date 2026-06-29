@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Iterable
 
 import numpy as np
 import pandas as pd
+
+from reserve_agent.data.detector import ExcelFormat, detect_excel_format
+from reserve_agent.data.table_scanner import (
+    TableRegion,
+    find_candidate_table_regions,
+    slice_region_with_header,
+)
 
 
 DEFAULT_WORKBOOK = "Chapter 08 - Data sets - Examples.xlsx"
@@ -23,6 +31,29 @@ class DataQualityReport:
     notes: list[str]
 
 
+class UnsupportedExcelFormatError(ValueError):
+    """Raised when no candidate table can be converted into a triangle."""
+
+    detected_format: ExcelFormat = "unknown"
+
+
+@dataclass
+class DetectedTable:
+    region: TableRegion
+    table: pd.DataFrame
+    format_name: ExcelFormat
+
+
+@dataclass
+class ExcelLoadResult:
+    source_table: pd.DataFrame
+    triangle: pd.DataFrame
+    format_name: ExcelFormat
+    region: TableRegion
+    candidates: list[DetectedTable]
+    quality: DataQualityReport
+
+
 def find_default_workbook(base_dir: str | Path = ".") -> Path:
     base = Path(base_dir)
     candidate = base / DEFAULT_WORKBOOK
@@ -38,25 +69,36 @@ def list_excel_sheets(file_path: str | Path) -> list[str]:
     return pd.ExcelFile(file_path).sheet_names
 
 
-def load_claims_snapshot(file_path: str | Path, sheet_name: str = "Claims data") -> pd.DataFrame:
-    """Load the workbook's snapshot-style claims table.
+def choose_default_sheet(sheet_names: list[str]) -> int:
+    """Prefer a Claims data sheet even when it has a numeric prefix."""
 
-    The selected educational workbook stores one row per claim and measure
-    (Paid / O/S / Incurred), followed by valuation-year columns.
-    """
+    if not sheet_names:
+        return 0
+
+    def base_name(name: str) -> str:
+        lowered = str(name).strip().lower()
+        return re.sub(r"^\s*\d+(?:\.\d+)*[.)\s_-]*", "", lowered).strip()
+
+    for index, name in enumerate(sheet_names):
+        if base_name(name) == "claims data":
+            return index
+    for index, name in enumerate(sheet_names):
+        if "claims data" in base_name(name):
+            return index
+    return 0
+
+
+def load_claims_snapshot(file_path: str | Path, sheet_name: str = "Claims data") -> pd.DataFrame:
+    """Load the original teaching workbook's snapshot-style claims table."""
 
     raw = pd.read_excel(file_path, sheet_name=sheet_name, header=2)
-    raw = raw.dropna(axis=1, how="all")
-    raw = raw.dropna(how="all")
+    raw = raw.dropna(axis=1, how="all").dropna(how="all")
 
     rename_map = {}
     for col in raw.columns:
         if isinstance(col, str):
             clean = col.strip()
-            if clean.startswith("Unnamed"):
-                rename_map[col] = ""
-            else:
-                rename_map[col] = clean
+            rename_map[col] = "" if clean.startswith("Unnamed") else clean
     raw = raw.rename(columns=rename_map)
     if "" in raw.columns:
         raw = raw.drop(columns=[""])
@@ -69,7 +111,6 @@ def load_claims_snapshot(file_path: str | Path, sheet_name: str = "Claims data")
     raw = raw[raw["Claim ID"].notna()].copy()
     raw["Loss Year"] = pd.to_numeric(raw["Loss Year"], errors="coerce").astype("Int64")
     raw["Type"] = raw["Type"].astype(str).str.strip()
-
     return raw
 
 
@@ -96,7 +137,7 @@ def build_cumulative_triangle(
     if not years:
         raise ValueError("未识别到评估年份列。")
 
-    measure_df = claims_df[claims_df["Type"].str.lower() == measure.lower()].copy()
+    measure_df = claims_df[claims_df["Type"].astype(str).str.lower() == measure.lower()].copy()
     if measure_df.empty:
         available = ", ".join(sorted(claims_df["Type"].dropna().astype(str).unique()))
         raise ValueError(f"未找到 Type={measure} 的记录。可用 Type：{available}")
@@ -127,23 +168,19 @@ def build_cumulative_triangle(
     triangle = triangle.sort_index().sort_index(axis=1)
     triangle.index = triangle.index.astype(int)
     triangle.columns = triangle.columns.astype(int)
-    triangle = triangle.astype(float)
-    return triangle
+    return triangle.astype(float)
 
 
 def latest_diagonal(cumulative_triangle: pd.DataFrame) -> pd.Series:
     latest = {}
     for ay, row in cumulative_triangle.iterrows():
         observed = row.dropna()
-        if observed.empty:
-            latest[ay] = np.nan
-        else:
-            latest[ay] = observed.iloc[-1]
+        latest[ay] = np.nan if observed.empty else observed.iloc[-1]
     return pd.Series(latest, name="latest_cumulative")
 
 
 def load_exposure_data(file_path: str | Path, sheet_name: str = "Exposure data (PL)") -> pd.DataFrame:
-    """Load the simple policy-year exposure table when available."""
+    """Load a simple policy-year exposure table when available."""
 
     try:
         df = pd.read_excel(file_path, sheet_name=sheet_name, header=2)
@@ -155,6 +192,7 @@ def load_exposure_data(file_path: str | Path, sheet_name: str = "Exposure data (
         for exposure_col in [
             "Turnover (£m) - revalued @ 4% p.a.",
             "Turnover (x 1€m) - revalued @ 4% p.a.",
+            "Turnover (x 1鈧琺) - revalued @ 4% p.a.",
             "Employee Numbers",
             "Employee Numbers.1",
         ]:
@@ -188,20 +226,130 @@ def quality_report(claims_df: pd.DataFrame, triangle: pd.DataFrame) -> DataQuali
         notes.append("存在全发展期金额为 0 的赔案记录，系统已保留但在解释中提示关注。")
     if triangle.shape[0] < 5:
         notes.append("事故年数量偏少，发展因子稳定性有限。")
-    if triangle.iloc[:, -1].notna().sum() < 2:
-        notes.append("最末发展期观测不足，尾部因子需要谨慎判断。")
+    if triangle.shape[1] and triangle.iloc[:, -1].notna().sum() < 2:
+        notes.append("最末发展期观察不足，尾部因子需要谨慎判断。")
     if not notes:
         notes.append("未发现会阻断建模的严重数据质量问题。")
 
     return DataQualityReport(
         row_count=int(len(claims_df)),
-        claim_count=int(claims_df["Claim ID"].nunique()),
+        claim_count=int(claims_df["Claim ID"].nunique()) if "Claim ID" in claims_df.columns else int(len(triangle.index)),
         accident_years=[int(x) for x in triangle.index.tolist()],
         valuation_years=[int(x) for x in years],
         missing_values=missing_values,
         negative_amount_cells=negative_amount_cells,
         zero_claim_rows=zero_claim_rows,
         notes=notes,
+    )
+
+
+def _generic_quality_report(
+    source_table: pd.DataFrame,
+    triangle: pd.DataFrame,
+    format_name: ExcelFormat,
+) -> DataQualityReport:
+    numeric_triangle = triangle.apply(pd.to_numeric, errors="coerce")
+    negative_cells = int((numeric_triangle < 0).sum().sum())
+    zero_rows = int((numeric_triangle.fillna(0).sum(axis=1) == 0).sum())
+    missing_values = int(numeric_triangle.isna().sum().sum())
+    accident_years = [int(year) for year in triangle.index]
+    valuation_years = sorted(
+        {
+            int(accident_year) + int(development)
+            for accident_year, row in triangle.iterrows()
+            for development, value in row.items()
+            if pd.notna(value)
+        }
+    )
+    if not valuation_years:
+        valuation_years = accident_years.copy()
+
+    format_labels = {
+        "triangle": "事故年 x 发展期三角形",
+        "long_table": "事故年/发展期/金额长表",
+        "claims_snapshot": "赔案快照明细",
+    }
+    notes = [f"系统自动识别为{format_labels.get(format_name, format_name)}格式。"]
+    if negative_cells:
+        notes.append("三角形中存在负值，可能来自追偿、冲回或数据修正。")
+    if zero_rows:
+        notes.append("存在所有已提供发展期金额均为 0 的事故年。")
+    if triangle.shape[0] < 5:
+        notes.append("事故年数量偏少，发展因子稳定性有限。")
+    if triangle.shape[1] and triangle.iloc[:, -1].notna().sum() < 2:
+        notes.append("最末发展期观察不足，尾部因子需要谨慎判断。")
+
+    return DataQualityReport(
+        row_count=int(len(source_table)),
+        claim_count=int(len(triangle.index)),
+        accident_years=accident_years,
+        valuation_years=valuation_years,
+        missing_values=missing_values,
+        negative_amount_cells=negative_cells,
+        zero_claim_rows=zero_rows,
+        notes=notes,
+    )
+
+
+def scan_excel_sheet(file_path: str | Path, sheet_name: str) -> tuple[pd.DataFrame, list[DetectedTable]]:
+    """Read a raw worksheet, find candidate regions, and classify each one."""
+
+    raw = pd.read_excel(
+        file_path,
+        sheet_name=sheet_name,
+        header=None,
+        engine="openpyxl",
+        engine_kwargs={"keep_links": False},
+    )
+    regions = find_candidate_table_regions(raw)
+    candidates = []
+    for region in regions:
+        table = slice_region_with_header(raw, region)
+        candidates.append(DetectedTable(region=region, table=table, format_name=detect_excel_format(table)))
+    return raw, candidates
+
+
+def load_excel_to_triangle(
+    file_path: str | Path,
+    sheet_name: str,
+    *,
+    measure: str = "Paid",
+    is_cumulative: bool = True,
+) -> ExcelLoadResult:
+    """Scan, detect, and adapt the best recognised table in a worksheet."""
+
+    from reserve_agent.data.adapters import adapt_to_triangle
+
+    _, candidates = scan_excel_sheet(file_path, sheet_name)
+    recognised = [candidate for candidate in candidates if candidate.format_name != "unknown"]
+    if not recognised:
+        raise UnsupportedExcelFormatError(
+            "无法识别工作表格式。请提供赔案明细、赔付三角形，或事故年/发展期/金额长表。"
+        )
+
+    selected = recognised[0]
+    triangle = adapt_to_triangle(
+        selected.table,
+        selected.format_name,
+        measure=measure,
+        is_cumulative=is_cumulative,
+    )
+
+    if selected.format_name == "claims_snapshot":
+        try:
+            quality = quality_report(selected.table, triangle)
+        except Exception:
+            quality = _generic_quality_report(selected.table, triangle, selected.format_name)
+    else:
+        quality = _generic_quality_report(selected.table, triangle, selected.format_name)
+
+    return ExcelLoadResult(
+        source_table=selected.table,
+        triangle=triangle,
+        format_name=selected.format_name,
+        region=selected.region,
+        candidates=candidates,
+        quality=quality,
     )
 
 
@@ -222,7 +370,6 @@ def safe_float(value: object, default: float = 0.0) -> float:
 
 
 def summarize_claims_by_year(claims_df: pd.DataFrame, measures: Iterable[str] = ("Paid", "Incurred")) -> pd.DataFrame:
-    years = valuation_year_columns(claims_df)
     rows = []
     for measure in measures:
         tri = build_cumulative_triangle(claims_df, measure=measure)
@@ -230,4 +377,3 @@ def summarize_claims_by_year(claims_df: pd.DataFrame, measures: Iterable[str] = 
         for ay, val in latest.items():
             rows.append({"Measure": measure, "Accident Year": ay, "Latest": val})
     return pd.DataFrame(rows)
-
