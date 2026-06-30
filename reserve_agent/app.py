@@ -48,7 +48,7 @@ def money_frame(df: pd.DataFrame) -> pd.DataFrame:
     money_cols = [
         col
         for col in formatted.columns
-        if any(key in col for key in ["Cumulative", "Ultimate", "Reserve", "Loss"])
+        if any(key in col for key in ["Cumulative", "Ultimate", "Reserve", "Loss", "Error", "Lower", "Upper"])
     ]
     for col in money_cols:
         formatted[col] = pd.to_numeric(formatted[col], errors="coerce")
@@ -142,15 +142,38 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("模型结果对比")
     st.dataframe(money_frame(outputs.comparison), use_container_width=True)
+    if outputs.mack is not None and not outputs.mack.empty:
+        st.subheader("Mack Chain Ladder uncertainty")
+        mack_diag = outputs.mack_diagnostics or {}
+        mack_cols = st.columns(4)
+        mack_cols[0].metric("Mack reserve", f"{mack_diag.get('total_mack_reserve', 0.0):,.0f}")
+        mack_cols[1].metric("Standard error", f"{mack_diag.get('total_mack_standard_error', 0.0):,.0f}")
+        mack_cols[2].metric("Coefficient of variation", f"{mack_diag.get('total_mack_cv', 0.0):.1%}")
+        mack_cols[3].metric(
+            "95% interval",
+            f"{mack_diag.get('mack_95_lower', 0.0):,.0f} - {mack_diag.get('mack_95_upper', 0.0):,.0f}",
+        )
+        st.dataframe(money_frame(outputs.mack), use_container_width=True)
+
+    if outputs.expected_lr_sensitivity is not None and not outputs.expected_lr_sensitivity.empty:
+        st.subheader("Expected loss ratio sensitivity")
+        st.dataframe(money_frame(outputs.expected_lr_sensitivity), use_container_width=True)
+
+    if outputs.factor_sensitivity is not None and not outputs.factor_sensitivity.empty:
+        st.subheader("Development factor sensitivity")
+        st.dataframe(money_frame(outputs.factor_sensitivity), use_container_width=True)
     for name, note in generate_method_notes().items():
         st.markdown(f"**{name}**：{note}")
 
 with tabs[3]:
     st.subheader("结果可视化")
     comparison = outputs.comparison.copy()
+    reserve_columns = ["Chain Ladder Reserve", "ELR Reserve", "BF Reserve", "Selected Reserve"]
+    if "Mack Reserve" in comparison.columns:
+        reserve_columns.insert(3, "Mack Reserve")
     long_reserve = comparison.melt(
         id_vars=["Accident Year"],
-        value_vars=["Chain Ladder Reserve", "ELR Reserve", "BF Reserve", "Selected Reserve"],
+        value_vars=reserve_columns,
         var_name="Method",
         value_name="Reserve",
     )
@@ -165,6 +188,38 @@ with tabs[3]:
     )
     fig2 = px.line(long_ultimate, x="Accident Year", y="Amount", color="Metric", markers=True)
     st.plotly_chart(fig2, use_container_width=True)
+
+    if outputs.mack is not None and not outputs.mack.empty:
+        st.subheader("Mack reserve interval")
+        mack_chart = outputs.mack.melt(
+            id_vars=["Accident Year"],
+            value_vars=["Mack Reserve", "Mack 95% Lower", "Mack 95% Upper"],
+            var_name="Metric",
+            value_name="Amount",
+        )
+        fig3 = px.line(mack_chart, x="Accident Year", y="Amount", color="Metric", markers=True)
+        st.plotly_chart(fig3, use_container_width=True)
+
+    if outputs.expected_lr_sensitivity is not None and not outputs.expected_lr_sensitivity.empty:
+        st.subheader("Expected loss ratio sensitivity")
+        lr_chart = outputs.expected_lr_sensitivity.melt(
+            id_vars=["Expected Loss Ratio"],
+            value_vars=["ELR Reserve", "BF Reserve"],
+            var_name="Method",
+            value_name="Reserve",
+        )
+        fig4 = px.line(lr_chart, x="Expected Loss Ratio", y="Reserve", color="Method", markers=True)
+        st.plotly_chart(fig4, use_container_width=True)
+
+    if outputs.factor_sensitivity is not None and not outputs.factor_sensitivity.empty:
+        st.subheader("Development factor sensitivity")
+        fig5 = px.line(
+            outputs.factor_sensitivity,
+            x="Factor Shock",
+            y="Chain Ladder Reserve",
+            markers=True,
+        )
+        st.plotly_chart(fig5, use_container_width=True)
 
 with tabs[4]:
     st.subheader("自动解释")

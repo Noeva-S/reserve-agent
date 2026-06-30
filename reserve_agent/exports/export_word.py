@@ -179,10 +179,64 @@ def build_word_report(
                 "ELR Reserve",
                 "BF Ultimate Loss",
                 "BF Reserve",
+                "Mack Ultimate",
+                "Mack Reserve",
+                "Mack Standard Error",
+                "Mack 95% Lower",
+                "Mack 95% Upper",
                 "Selected Ultimate",
                 "Selected Reserve",
             },
         )
+
+        if outputs.mack is not None and not outputs.mack.empty:
+            document.add_heading("4.1 Mack Chain Ladder 不确定性分析", level=2)
+            mack_diag = outputs.mack_diagnostics or {}
+            _add_key_value_table(
+                document,
+                [
+                    ("Mack 准备金", _format_amount(mack_diag.get("total_mack_reserve", 0.0))),
+                    ("Mack 标准误", _format_amount(mack_diag.get("total_mack_standard_error", 0.0))),
+                    ("Mack CV", f"{float(mack_diag.get('total_mack_cv', 0.0)):.1%}"),
+                    (
+                        "95% 准备金区间",
+                        f"{_format_amount(mack_diag.get('mack_95_lower', 0.0))}-"
+                        f"{_format_amount(mack_diag.get('mack_95_upper', 0.0))}",
+                    ),
+                ],
+            )
+            _add_dataframe_table(
+                document,
+                outputs.mack,
+                {
+                    "Latest Cumulative",
+                    "Mack Ultimate",
+                    "Mack Reserve",
+                    "Mack Standard Error",
+                    "Mack 75% Lower",
+                    "Mack 75% Upper",
+                    "Mack 95% Lower",
+                    "Mack 95% Upper",
+                },
+            )
+
+        if outputs.expected_lr_sensitivity is not None and not outputs.expected_lr_sensitivity.empty:
+            document.add_heading("4.2 期望赔付率敏感性分析", level=2)
+            _add_dataframe_table(
+                document,
+                outputs.expected_lr_sensitivity,
+                {"ELR Reserve", "ELR Ultimate", "BF Reserve", "BF Ultimate"},
+                max_rows=30,
+            )
+
+        if outputs.factor_sensitivity is not None and not outputs.factor_sensitivity.empty:
+            document.add_heading("4.3 发展因子敏感性分析", level=2)
+            _add_dataframe_table(
+                document,
+                outputs.factor_sensitivity,
+                {"Chain Ladder Reserve", "Chain Ladder Ultimate"},
+                max_rows=30,
+            )
 
         document.add_heading("5. 可视化", level=1)
         document.add_picture(_reserve_chart(outputs), width=Inches(6.2))

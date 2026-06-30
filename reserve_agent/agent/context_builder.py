@@ -40,6 +40,7 @@ def build_chat_context(report: DataQualityReport, outputs: ReservingOutputs) -> 
         "Expected Loss Ratio": "ELR Reserve",
         "Bornhuetter-Ferguson": "BF Reserve",
         "Selected": "Selected Reserve",
+        "Mack Chain Ladder": "Mack Reserve",
     }
     reserve_by_model = {
         name: float(comparison[column].sum())
@@ -61,8 +62,13 @@ def build_chat_context(report: DataQualityReport, outputs: ReservingOutputs) -> 
                     "reserve_share": round(float(row["Selected Reserve"]) / total_selected, 4),
                     "latest_cumulative": round(float(row.get("Latest Cumulative", 0.0)), 2),
                     "selected_ultimate": round(float(row.get("Selected Ultimate", 0.0)), 2),
+                    "mack_reserve": round(float(row.get("Mack Reserve", 0.0)), 2),
                 }
             )
+
+    mack_diag = outputs.mack_diagnostics or {}
+    expected_lr_range = _sensitivity_range(outputs.expected_lr_sensitivity, "ELR Reserve")
+    factor_range = _sensitivity_range(outputs.factor_sensitivity, "Chain Ladder Reserve")
 
     payload.update(
         {
@@ -84,17 +90,47 @@ def build_chat_context(report: DataQualityReport, outputs: ReservingOutputs) -> 
                 else None,
             },
             "top_reserve_years": top_years,
+            "mack_summary": {
+                "total_reserve": round(float(mack_diag.get("total_mack_reserve", 0.0)), 2),
+                "standard_error": round(float(mack_diag.get("total_mack_standard_error", 0.0)), 2),
+                "coefficient_of_variation": round(float(mack_diag.get("total_mack_cv", 0.0)), 4),
+                "reserve_75_interval": [
+                    round(float(mack_diag.get("mack_75_lower", 0.0)), 2),
+                    round(float(mack_diag.get("mack_75_upper", 0.0)), 2),
+                ],
+                "reserve_95_interval": [
+                    round(float(mack_diag.get("mack_95_lower", 0.0)), 2),
+                    round(float(mack_diag.get("mack_95_upper", 0.0)), 2),
+                ],
+            },
+            "sensitivity_summary": {
+                "expected_lr_reserve_range": expected_lr_range,
+                "factor_shock_reserve_range": factor_range,
+            },
             "capabilities": {
                 "has_chain_ladder": True,
                 "has_expected_loss_ratio": True,
                 "has_bornhuetter_ferguson": True,
-                "has_mack_result": False,
+                "has_mack_result": bool(outputs.mack is not None and not outputs.mack.empty),
                 "has_bootstrap_result": False,
-                "has_uncertainty_metrics": False,
+                "has_uncertainty_metrics": bool(outputs.mack_diagnostics),
+                "has_sensitivity_analysis": bool(
+                    outputs.expected_lr_sensitivity is not None
+                    and not outputs.expected_lr_sensitivity.empty
+                    and outputs.factor_sensitivity is not None
+                    and not outputs.factor_sensitivity.empty
+                ),
             },
             "short_summary": {
                 "data_scope": f"事故年范围 {min(report.accident_years)}-{max(report.accident_years)}，记录数 {report.row_count}。",
-                "model_results": f"展示准备金约 {_money(outputs.diagnostics['total_selected_reserve'])}，展示最终赔款约 {_money(outputs.diagnostics['total_selected_ultimate'])}。",
+                "model_results": f"展示准备金约 {_money(outputs.diagnostics['total_selected_reserve'])}，展示最终赔款约 "
+                f"{_money(outputs.diagnostics['total_selected_ultimate'])}。",
+                "mack_uncertainty": (
+                    f"Mack 准备金约 {_money(mack_diag.get('total_mack_reserve'))}，95% 区间约 "
+                    f"{_money(mack_diag.get('mack_95_lower'))}-{_money(mack_diag.get('mack_95_upper'))}。"
+                    if mack_diag
+                    else ""
+                ),
                 "largest_reserve_year": (
                     f"准备金贡献最高的事故年为 {top_years[0]['accident_year']}，占比约 {top_years[0]['reserve_share']:.1%}。"
                     if top_years
@@ -105,8 +141,18 @@ def build_chat_context(report: DataQualityReport, outputs: ReservingOutputs) -> 
                 "Chain Ladder": "基于历史累计赔款发展模式外推最终赔款。",
                 "Expected Loss Ratio": "使用先验赔付率或暴露量估计最终赔款。",
                 "Bornhuetter-Ferguson": "结合先验最终赔款和已报告比例，缓和早期事故年的波动。",
+                "Mack Chain Ladder": "在链梯法基础上估计准备金标准误、CV 和置信区间。",
                 "Selected Reserve": "当前系统展示口径，默认取 Chain Ladder 与 BF 的平均值。",
             },
         }
     )
     return payload
+
+
+def _sensitivity_range(frame: pd.DataFrame | None, column: str) -> dict[str, float] | None:
+    if frame is None or frame.empty or column not in frame.columns:
+        return None
+    values = pd.to_numeric(frame[column], errors="coerce").dropna()
+    if values.empty:
+        return None
+    return {"min": round(float(values.min()), 2), "max": round(float(values.max()), 2)}
