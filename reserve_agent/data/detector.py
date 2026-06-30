@@ -7,7 +7,18 @@ from typing import Any, Literal
 import pandas as pd
 
 
-ExcelFormat = Literal["claims_snapshot", "triangle", "long_table", "unknown"]
+ExcelFormat = Literal[
+    "claims_snapshot",
+    "triangle",
+    "long_table",
+    "policy_data",
+    "exposure_data",
+    "unknown",
+]
+
+RESERVING_FORMATS: frozenset[ExcelFormat] = frozenset(
+    {"claims_snapshot", "triangle", "long_table"}
+)
 
 
 ROLE_ALIASES: dict[str, set[str]] = {
@@ -35,6 +46,12 @@ ROLE_ALIASES: dict[str, set[str]] = {
         "delayyear",
         "delaythirds",
         "delayshifted",
+        "delaydays",
+        "delayday",
+        "delaymonths",
+        "delaymonth",
+        "reportingdelay",
+        "reportingdelaydays",
         "发展期",
         "发展年",
         "进展期",
@@ -59,6 +76,41 @@ ROLE_ALIASES: dict[str, set[str]] = {
         "累计赔款",
         "累计赔款金额",
     },
+    "policy_id": {"policyid", "policynumber", "policyno", "policy", "保单号", "保单编号"},
+    "inception_date": {
+        "inceptiondate",
+        "policystartdate",
+        "effectivedate",
+        "startdate",
+        "保单起期",
+        "生效日期",
+    },
+    "expiry_date": {"expirydate", "policyenddate", "expirationdate", "enddate", "保单止期", "到期日期"},
+    "premium": {
+        "premium",
+        "grosspremium",
+        "netpremium",
+        "earnedpremium",
+        "writtenpremium",
+        "保费",
+        "毛保费",
+        "净保费",
+        "已赚保费",
+    },
+    "exposure": {
+        "exposure",
+        "exposureamount",
+        "turnover",
+        "employeenumbers",
+        "employeecount",
+        "payroll",
+        "suminsured",
+        "暴露",
+        "风险暴露",
+        "营业额",
+        "员工数",
+        "保额",
+    },
 }
 
 
@@ -71,7 +123,7 @@ def normalise_label(value: Any) -> str:
     except Exception:
         pass
     text = str(value).strip().lower()
-    return re.sub(r"[\s_\-./\\()（）:：#]+", "", text)
+    return re.sub(r"[\s_\-./\\()（）:：]+", "", text)
 
 
 def find_role_column(df: pd.DataFrame, role: str) -> Any | None:
@@ -82,13 +134,16 @@ def find_role_column(df: pd.DataFrame, role: str) -> Any | None:
     return None
 
 
-def parse_development_label(value: Any) -> int | None:
-    """Parse explicit development labels such as 0, Dev 1, 12 months.
+def _find_column_containing(df: pd.DataFrame, fragments: tuple[str, ...]) -> Any | None:
+    for column in df.columns:
+        label = normalise_label(column)
+        if any(fragment in label for fragment in fragments):
+            return column
+    return None
 
-    The function intentionally avoids loose rules such as "any number plus the
-    word year", because exposure columns like "Turnover (x 1m) - policy year"
-    would otherwise be misclassified as development columns.
-    """
+
+def parse_development_label(value: Any) -> int | None:
+    """Parse explicit development labels such as 0, Dev 1, 12 months."""
 
     if value is None or isinstance(value, bool):
         return None
@@ -135,8 +190,6 @@ def detect_excel_format(df: pd.DataFrame) -> ExcelFormat:
     if accident_col is not None and development_col is not None and amount_col is not None:
         return "long_table"
 
-    # Claim-level long tables often contain Claim ID, Policy Year, Delay, Paid
-    # and Total incurred, without a generic "Amount" column.
     if claim_col is not None and accident_col is not None and development_col is not None:
         amount_like = [column for column in df.columns if normalise_label(column) in ROLE_ALIASES["amount"]]
         if amount_like:
@@ -151,5 +204,18 @@ def detect_excel_format(df: pd.DataFrame) -> ExcelFormat:
     ]
     if has_accident_axis and len(development_columns) >= 2:
         return "triangle"
+
+    policy_col = find_role_column(df, "policy_id")
+    inception_col = find_role_column(df, "inception_date")
+    premium_col = find_role_column(df, "premium") or _find_column_containing(df, ("premium", "保费"))
+    if policy_col is not None and (inception_col is not None or premium_col is not None):
+        return "policy_data"
+
+    exposure_col = find_role_column(df, "exposure") or _find_column_containing(
+        df,
+        ("exposure", "turnover", "employeenumber", "payroll", "suminsured", "premium", "暴露", "保费"),
+    )
+    if accident_col is not None and exposure_col is not None:
+        return "exposure_data"
 
     return "unknown"

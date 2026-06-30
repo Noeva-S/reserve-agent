@@ -8,7 +8,12 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from reserve_agent.data.detector import ExcelFormat, detect_excel_format
+from reserve_agent.data.detector import (
+    RESERVING_FORMATS,
+    ExcelFormat,
+    detect_excel_format,
+    normalise_label,
+)
 from reserve_agent.data.table_scanner import (
     TableRegion,
     find_candidate_table_regions,
@@ -42,6 +47,8 @@ class DetectedTable:
     region: TableRegion
     table: pd.DataFrame
     format_name: ExcelFormat
+    recognition_source: str = "rules"
+    recognition_reason: str = ""
 
 
 @dataclass
@@ -52,6 +59,10 @@ class ExcelLoadResult:
     region: TableRegion
     candidates: list[DetectedTable]
     quality: DataQualityReport
+    requested_sheet_name: str = ""
+    source_sheet_name: str = ""
+    recognition_source: str = "rules"
+    warnings: tuple[str, ...] = ()
 
 
 def find_default_workbook(base_dir: str | Path = ".") -> Path:
@@ -66,7 +77,17 @@ def find_default_workbook(base_dir: str | Path = ".") -> Path:
 
 
 def list_excel_sheets(file_path: str | Path) -> list[str]:
-    return pd.ExcelFile(file_path).sheet_names
+    with pd.ExcelFile(
+        file_path,
+        engine="openpyxl",
+        engine_kwargs={"keep_links": False},
+    ) as workbook:
+        return list(workbook.sheet_names)
+
+
+def _base_sheet_name(name: str) -> str:
+    lowered = str(name).strip().lower()
+    return re.sub(r"^\s*\d+(?:\.\d+)*[.)\s_-]*", "", lowered).strip()
 
 
 def choose_default_sheet(sheet_names: list[str]) -> int:
@@ -74,16 +95,11 @@ def choose_default_sheet(sheet_names: list[str]) -> int:
 
     if not sheet_names:
         return 0
-
-    def base_name(name: str) -> str:
-        lowered = str(name).strip().lower()
-        return re.sub(r"^\s*\d+(?:\.\d+)*[.)\s_-]*", "", lowered).strip()
-
     for index, name in enumerate(sheet_names):
-        if base_name(name) == "claims data":
+        if _base_sheet_name(name) == "claims data":
             return index
     for index, name in enumerate(sheet_names):
-        if "claims data" in base_name(name):
+        if "claims data" in _base_sheet_name(name):
             return index
     return 0
 
@@ -190,9 +206,10 @@ def load_exposure_data(file_path: str | Path, sheet_name: str = "Exposure data (
     candidates = []
     for year_col in ["Policy year.1", "Policy year"]:
         for exposure_col in [
-            "Turnover (£m) - revalued @ 4% p.a.",
+            "Turnover (拢m) - revalued @ 4% p.a.",
             "Turnover (x 1€m) - revalued @ 4% p.a.",
             "Turnover (x 1鈧琺) - revalued @ 4% p.a.",
+            "Turnover (x 1閳х惡) - revalued @ 4% p.a.",
             "Employee Numbers",
             "Employee Numbers.1",
         ]:
@@ -268,8 +285,13 @@ def _generic_quality_report(
         "triangle": "事故年 x 发展期三角形",
         "long_table": "事故年/发展期/金额长表",
         "claims_snapshot": "赔案快照明细",
+        "policy_data": "保单数据",
+        "exposure_data": "暴露量数据",
+        "unknown": "未知格式",
     }
     notes = [f"系统自动识别为{format_labels.get(format_name, format_name)}格式。"]
+    if any("delayday" in normalise_label(column) for column in source_table.columns):
+        notes.append("原表按天记录报告延迟，系统已按 365.25 天向下归入年度发展期。")
     if negative_cells:
         notes.append("三角形中存在负值，可能来自追偿、冲回或数据修正。")
     if zero_rows:
@@ -309,32 +331,156 @@ def scan_excel_sheet(file_path: str | Path, sheet_name: str) -> tuple[pd.DataFra
     return raw, candidates
 
 
+def _adapt_first_candidate(
+    candidates: list[DetectedTable],
+    *,
+    measure: str,
+    is_cumulative: bool,
+) -> tuple[DetectedTable, pd.DataFrame] | None:
+    from reserve_agent.data.adapters import adapt_to_triangle
+
+    for candidate in candidates:
+        if candidate.format_name not in RESERVING_FORMATS:
+            continue
+        try:
+            triangle = adapt_to_triangle(
+                candidate.table,
+                candidate.format_name,
+                measure=measure,
+                is_cumulative=is_cumulative,
+            )
+        except (TypeError, ValueError):
+            continue
+        if not triangle.empty:
+            return candidate, triangle
+    return None
+
+
+def _api_assisted_candidate(
+    candidates: list[DetectedTable],
+    *,
+    sheet_name: str,
+    measure: str,
+    is_cumulative: bool,
+    api_key: str,
+) -> tuple[DetectedTable, pd.DataFrame]:
+    from reserve_agent.data.api_detector import apply_api_mapping, request_api_detection
+
+    result = request_api_detection(
+        [candidate.table for candidate in candidates],
+        sheet_name=sheet_name,
+        measure=measure,
+        api_key=api_key,
+    )
+    original = candidates[result.candidate_index]
+    mapped = DetectedTable(
+        region=original.region,
+        table=apply_api_mapping(original.table, result),
+        format_name=result.format_name,
+        recognition_source="api",
+        recognition_reason=result.reason,
+    )
+    adapted = _adapt_first_candidate([mapped], measure=measure, is_cumulative=is_cumulative)
+    if adapted is None:
+        raise UnsupportedExcelFormatError("API 返回的字段映射无法转换为有效赔付三角。")
+    return adapted
+
+
+def _fallback_sheet_order(sheet_names: list[str], requested_sheet: str) -> list[str]:
+    def rank(name: str) -> tuple[int, int]:
+        base = _base_sheet_name(name)
+        if base == "claims data":
+            priority = 0
+        elif "claims" in base or "claim" in base or "赔案" in base or "索赔" in base:
+            priority = 1
+        elif any(word in base for word in ("triangle", "projection", "reserve", "三角", "准备金")):
+            priority = 2
+        elif any(word in base for word in ("disclaimer", "说明", "exposure", "policy data")):
+            priority = 4
+        else:
+            priority = 3
+        return priority, sheet_names.index(name)
+
+    return sorted((name for name in sheet_names if name != requested_sheet), key=rank)
+
+
 def load_excel_to_triangle(
     file_path: str | Path,
     sheet_name: str,
     *,
     measure: str = "Paid",
     is_cumulative: bool = True,
+    api_key: str | None = None,
+    fallback_to_other_sheets: bool = True,
 ) -> ExcelLoadResult:
-    """Scan, detect, and adapt the best recognised table in a worksheet."""
+    """Detect a reserving table, using API/schema and workbook fallbacks when needed."""
 
-    from reserve_agent.data.adapters import adapt_to_triangle
+    requested_sheet = sheet_name
+    warnings: list[str] = []
+    api_error: str | None = None
+    _, requested_candidates = scan_excel_sheet(file_path, requested_sheet)
+    adapted = _adapt_first_candidate(requested_candidates, measure=measure, is_cumulative=is_cumulative)
 
-    _, candidates = scan_excel_sheet(file_path, sheet_name)
-    recognised = [candidate for candidate in candidates if candidate.format_name != "unknown"]
-    if not recognised:
+    locally_recognised = any(candidate.format_name != "unknown" for candidate in requested_candidates)
+    if adapted is None and api_key and not locally_recognised:
+        try:
+            adapted = _api_assisted_candidate(
+                requested_candidates,
+                sheet_name=requested_sheet,
+                measure=measure,
+                is_cumulative=is_cumulative,
+                api_key=api_key,
+            )
+            requested_candidates.append(adapted[0])
+            warnings.append("本地规则未能完成字段映射，本次使用 DeepSeek API 辅助识别。")
+        except Exception as exc:
+            api_error = str(exc)
+
+    source_sheet = requested_sheet
+    candidates = requested_candidates
+    if adapted is None and fallback_to_other_sheets:
+        for candidate_sheet in _fallback_sheet_order(list_excel_sheets(file_path), requested_sheet):
+            try:
+                _, other_candidates = scan_excel_sheet(file_path, candidate_sheet)
+            except Exception:
+                continue
+            other_adapted = _adapt_first_candidate(
+                other_candidates,
+                measure=measure,
+                is_cumulative=is_cumulative,
+            )
+            if other_adapted is not None:
+                adapted = other_adapted
+                source_sheet = candidate_sheet
+                candidates = other_candidates
+                warnings.append(
+                    f"所选工作表“{requested_sheet}”不能直接形成赔付发展三角，"
+                    f"系统已自动改用“{candidate_sheet}”。"
+                )
+                break
+
+    if adapted is None:
+        detected = sorted(
+            {
+                candidate.format_name
+                for candidate in requested_candidates
+                if candidate.format_name != "unknown"
+            }
+        )
+        details = (
+            f"本地规则识别到：{', '.join(detected)}；但这些数据不能单独形成赔付发展三角。"
+            if detected
+            else "本地规则未找到可建模的数据表。"
+        )
+        if api_error:
+            details += f" API 辅助识别也未成功：{api_error}"
+        elif not api_key:
+            details += " 如需启用 API 兜底，请打开 DeepSeek API 开关并配置 DEEPSEEK_API_KEY。"
         raise UnsupportedExcelFormatError(
-            "无法识别工作表格式。请提供赔案明细、赔付三角形，或事故年/发展期/金额长表。"
+            f"无法从工作表“{requested_sheet}”或同工作簿其他工作表生成赔付三角。{details}"
         )
 
-    selected = recognised[0]
-    triangle = adapt_to_triangle(
-        selected.table,
-        selected.format_name,
-        measure=measure,
-        is_cumulative=is_cumulative,
-    )
-
+    selected, triangle = adapted
     if selected.format_name == "claims_snapshot":
         try:
             quality = quality_report(selected.table, triangle)
@@ -350,6 +496,10 @@ def load_excel_to_triangle(
         region=selected.region,
         candidates=candidates,
         quality=quality,
+        requested_sheet_name=requested_sheet,
+        source_sheet_name=source_sheet,
+        recognition_source=selected.recognition_source,
+        warnings=tuple(warnings),
     )
 
 

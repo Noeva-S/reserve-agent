@@ -32,7 +32,31 @@ def _find_preferred_column(df: pd.DataFrame, aliases: tuple[str, ...]) -> Any | 
 def _is_claim_development_table(df: pd.DataFrame) -> bool:
     claim_col = find_role_column(df, "claim_id")
     labels = {normalise_label(column) for column in df.columns}
-    return claim_col is not None and bool(labels & {"delayyears", "delayyear", "delaythirds", "delayshifted"})
+    return claim_col is not None and bool(
+        labels
+        & {
+            "delayyears",
+            "delayyear",
+            "delaythirds",
+            "delayshifted",
+            "delaydays",
+            "delayday",
+            "delaymonths",
+            "delaymonth",
+            "reportingdelay",
+            "reportingdelaydays",
+        }
+    )
+
+
+def _normalise_development_values(series: pd.Series, column: Any) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    label = normalise_label(column)
+    if "day" in label or "天" in label:
+        return numeric // 365.25
+    if "month" in label or "月" in label:
+        return numeric // 12
+    return numeric
 
 
 def _find_amount_column(df: pd.DataFrame, measure: str) -> Any | None:
@@ -146,7 +170,18 @@ def long_table_to_triangle(
         )
         development_col = _find_preferred_column(
             df,
-            ("delayshifted", "delayyears", "delayyear", "delaythirds"),
+            (
+                "delayshifted",
+                "delayyears",
+                "delayyear",
+                "delaymonths",
+                "delaymonth",
+                "delaydays",
+                "delayday",
+                "reportingdelaydays",
+                "reportingdelay",
+                "delaythirds",
+            ),
         )
     else:
         accident_col = find_role_column(df, "accident_year")
@@ -158,7 +193,7 @@ def long_table_to_triangle(
     long_df = df[[accident_col, development_col, amount_col]].copy()
     long_df.columns = ["accident_year", "development", "amount"]
     long_df["accident_year"] = pd.to_numeric(long_df["accident_year"], errors="coerce")
-    long_df["development"] = pd.to_numeric(long_df["development"], errors="coerce")
+    long_df["development"] = _normalise_development_values(long_df["development"], development_col)
     long_df["amount"] = pd.to_numeric(long_df["amount"], errors="coerce")
     long_df = long_df.dropna(subset=["accident_year", "development", "amount"])
     long_df = long_df[long_df["development"] >= 0]

@@ -48,6 +48,13 @@ def _header_score(values: list[Any]) -> float:
     has_type = bool(normalised & ROLE_ALIASES["measure"])
     has_development = bool(normalised & ROLE_ALIASES["development"])
     has_amount = bool(normalised & ROLE_ALIASES["amount"])
+    has_policy = bool(normalised & ROLE_ALIASES["policy_id"])
+    has_inception = bool(normalised & ROLE_ALIASES["inception_date"])
+    has_premium = bool(normalised & ROLE_ALIASES["premium"])
+    has_exposure = bool(normalised & ROLE_ALIASES["exposure"]) or any(
+        any(fragment in label for fragment in ("exposure", "turnover", "employeenumber", "premium", "暴露", "保费"))
+        for label in normalised
+    )
     development_labels = sum(_looks_like_development(value) for value in non_empty)
 
     if has_claim and has_accident and has_type:
@@ -56,6 +63,10 @@ def _header_score(values: list[Any]) -> float:
         return 110.0
     if has_accident and development_labels >= 2:
         return 100.0 + min(development_labels, 20)
+    if has_policy and (has_inception or has_premium):
+        return 85.0
+    if has_accident and has_exposure:
+        return 80.0
 
     # Keep tidy unknown tables as low-confidence candidates so the UI can say
     # "unknown format" instead of selecting a title row.

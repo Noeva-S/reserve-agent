@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -137,6 +139,99 @@ class ExcelDetectionTests(unittest.TestCase):
         self.assertEqual(incurred.triangle.loc[2019, 0], 150)
         self.assertEqual(incurred.triangle.loc[2019, 1], 230)
 
+    def test_claim_detail_with_delay_days_is_bucketed_to_development_years(self) -> None:
+        rows = [
+            ["Claim ID", "Policy Year", "Paid", "Total incurred", "Delay (days)"],
+            ["C1", 2020, 100, 150, 0],
+            ["C2", 2020, 50, 80, 400],
+            ["C3", 2021, 70, 90, 20],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "claims_delay_days.xlsx"
+            _write_raw_workbook(path, rows)
+            result = load_excel_to_triangle(path, "Data", measure="Paid")
+
+        self.assertEqual(result.format_name, "long_table")
+        self.assertEqual(list(result.triangle.columns), [0, 1])
+        self.assertEqual(result.triangle.loc[2020, 0], 100)
+        self.assertEqual(result.triangle.loc[2020, 1], 150)
+        self.assertTrue(any("365.25" in note for note in result.quality.notes))
+
+    def test_policy_data_is_recognised_but_claims_sheet_is_used_for_model(self) -> None:
+        policy = pd.DataFrame(
+            {
+                "Policy ID": ["P1", "P2"],
+                "Inception Date": ["2020-01-01", "2021-01-01"],
+                "Net Premium": [1000, 1200],
+            }
+        )
+        self.assertEqual(detect_excel_format(policy), "policy_data")
+
+        claims = pd.DataFrame(
+            {
+                "Claim ID": ["C1", "C2"],
+                "Loss Year": [2020, 2021],
+                "Type": ["Paid", "Paid"],
+                2020: [100, None],
+                2021: [150, 80],
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mixed.xlsx"
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                policy.to_excel(writer, sheet_name="Policy data", index=False)
+                claims.to_excel(writer, sheet_name="Claims data", index=False)
+            with patch("reserve_agent.agent.llm_client.call_deepseek") as mocked_api:
+                result = load_excel_to_triangle(
+                    path,
+                    "Policy data",
+                    measure="Paid",
+                    api_key="test-key",
+                )
+
+        self.assertEqual(result.requested_sheet_name, "Policy data")
+        self.assertEqual(result.source_sheet_name, "Claims data")
+        self.assertEqual(result.format_name, "claims_snapshot")
+        self.assertTrue(result.warnings)
+        mocked_api.assert_not_called()
+
+    def test_api_fallback_maps_unknown_columns_without_sending_cell_values(self) -> None:
+        rows = [
+            ["Origin Period", "Lag Bucket", "Paid Cash", "Claimant Name"],
+            [2020, 0, 100, "Alice Sensitive"],
+            [2020, 1, 150, "Bob Sensitive"],
+            [2021, 0, 80, "Carol Sensitive"],
+        ]
+        response = {
+            "candidate_index": 0,
+            "format_name": "long_table",
+            "column_mapping": {
+                "accident_year": "Origin Period",
+                "development": "Lag Bucket",
+                "amount": "Paid Cash",
+            },
+            "development_unit": "years",
+            "confidence": 0.96,
+            "reason": "列结构符合事故期、发展期、金额长表。",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "api_fallback.xlsx"
+            _write_raw_workbook(path, rows)
+            with patch("reserve_agent.agent.llm_client.call_deepseek", return_value=json.dumps(response)) as mocked:
+                result = load_excel_to_triangle(
+                    path,
+                    "Data",
+                    measure="Paid",
+                    api_key="test-key",
+                    fallback_to_other_sheets=False,
+                )
+
+        messages = mocked.call_args.args[0]
+        prompt_text = "\n".join(message["content"] for message in messages)
+        self.assertNotIn("Alice Sensitive", prompt_text)
+        self.assertEqual(result.recognition_source, "api")
+        self.assertEqual(result.triangle.loc[2020, 1], 150)
+
     def test_exposure_column_with_currency_unit_is_not_development(self) -> None:
         exposure = pd.DataFrame(
             {
@@ -146,7 +241,18 @@ class ExcelDetectionTests(unittest.TestCase):
             }
         )
         self.assertIsNone(parse_development_label("Turnover (x 1€m) - aligned to policy year"))
-        self.assertEqual(detect_excel_format(exposure), "unknown")
+        self.assertEqual(detect_excel_format(exposure), "exposure_data")
+
+    def test_chapter_08_workbook_claims_pl_sheet(self) -> None:
+        workbook = Path(__file__).resolve().parents[1] / "Chapter 08 - Data sets - Examples.xlsx"
+        if not workbook.exists():
+            self.skipTest("Chapter 08 workbook is not available")
+
+        result = load_excel_to_triangle(workbook, "Claims data (PL)", measure="Paid")
+        self.assertEqual(result.format_name, "long_table")
+        self.assertEqual(result.region.header_row, 11)
+        self.assertGreaterEqual(result.triangle.shape[0], 8)
+        self.assertGreaterEqual(result.triangle.shape[1], 5)
 
     def test_chapter_13_workbook_claims_sheet(self) -> None:
         workbook = Path(__file__).resolve().parents[1] / "Chapter 13a - IBNR (triangle-based) v4.xlsx"

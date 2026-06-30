@@ -56,8 +56,22 @@ def money_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def load_pipeline(file_path: str, sheet_name: str, measure: str, expected_lr: float, is_cumulative: bool):
-    load_result = load_excel_to_triangle(file_path, sheet_name, measure=measure, is_cumulative=is_cumulative)
+def load_pipeline(
+    file_path: str,
+    sheet_name: str,
+    measure: str,
+    expected_lr: float,
+    is_cumulative: bool,
+    use_api_detection: bool = False,
+    _api_key: str | None = None,
+):
+    load_result = load_excel_to_triangle(
+        file_path,
+        sheet_name,
+        measure=measure,
+        is_cumulative=is_cumulative,
+        api_key=_api_key if use_api_detection else None,
+    )
     triangle = load_result.triangle
     exposure = load_exposure_data(file_path)
     report = load_result.quality
@@ -90,9 +104,19 @@ with st.sidebar:
     st.divider()
     use_deepseek = st.toggle("启用 DeepSeek API", value=False)
 
+api_key = (read_secret("DEEPSEEK_API_KEY") or get_deepseek_key()) if use_deepseek else None
+if use_deepseek and not api_key:
+    st.sidebar.warning("未检测到 DEEPSEEK_API_KEY；Excel 将只使用本地规则识别。")
+
 try:
     load_result, triangle, exposure_df, dq_report, outputs, validation_issues = load_pipeline(
-        str(data_path), sheet_name, measure, expected_lr, is_cumulative
+        str(data_path),
+        sheet_name,
+        measure,
+        expected_lr,
+        is_cumulative,
+        use_deepseek,
+        _api_key=api_key,
     )
 except Exception as exc:
     st.error(f"数据处理失败：{exc}")
@@ -109,11 +133,17 @@ tabs = st.tabs(["数据诊断", "赔付三角", "模型结果", "可视化", "Ag
 
 with tabs[0]:
     st.subheader("Excel 识别结果")
-    c1, c2, c3 = st.columns(3)
+    for warning in load_result.warnings:
+        st.warning(warning)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("识别格式", load_result.format_name)
     c2.metric("表头行", str(load_result.region.header_row + 1))
     c3.metric("候选区域数", str(len(load_result.candidates)))
-    st.write("系统会先扫描标题、说明、空行之后的有效表格区域，再识别明细表、三角形或长表。")
+    c4.metric("实际数据 Sheet", load_result.source_sheet_name or sheet_name)
+    st.write(
+        "系统会先扫描标题、说明、空行之后的有效表格区域，再识别明细表、三角形或长表；"
+        "本地规则失败且启用 API 时，只提交列名和类型统计进行辅助映射。"
+    )
 
     st.subheader("数据质量诊断")
     for item in generate_data_diagnosis(dq_report):
@@ -236,7 +266,6 @@ with tabs[4]:
     final_text = st.session_state.get("agent_final_text", rule_text)
     if use_deepseek:
         if st.button("生成 / 刷新 DeepSeek 增强解释"):
-            api_key = read_secret("DEEPSEEK_API_KEY") or get_deepseek_key()
             if not api_key:
                 st.warning("未检测到 DeepSeek API Key，已保留规则型解释。")
             else:
@@ -278,10 +307,10 @@ with tabs[4]:
         st.session_state.reserve_chat_history.append({"role": "user", "content": user_question})
         with st.chat_message("user"):
             st.markdown(user_question)
-        api_key = read_secret("DEEPSEEK_API_KEY") or get_deepseek_key() if use_deepseek else None
+        chat_api_key = api_key if use_deepseek else None
         with st.chat_message("assistant"):
             with st.spinner("正在生成回答..."):
-                answer = answer_user_question(user_question, chat_context, api_key=api_key, chat_history=history_before)
+                answer = answer_user_question(user_question, chat_context, api_key=chat_api_key, chat_history=history_before)
             st.markdown(answer)
         st.session_state.reserve_chat_history.append({"role": "assistant", "content": answer})
 
@@ -293,7 +322,7 @@ with tabs[5]:
     word_bytes = build_word_report(
         explanation_text,
         source_file=Path(data_path).name,
-        sheet_name=sheet_name,
+        sheet_name=load_result.source_sheet_name or sheet_name,
         format_name=load_result.format_name,
         measure=measure,
         triangle=triangle,
