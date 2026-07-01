@@ -203,6 +203,15 @@ def _show_issues(issues) -> None:
             st.info(issue.message)
 
 
+def _display_recognition_reason(load_result) -> str:
+    reason = str(getattr(load_result, "recognition_reason", "") or "").strip()
+    if not reason:
+        return "规则识别完成"
+    if "规则扫描得分" in reason or "规则分数" in reason or "Rule Score" in reason:
+        return "本地规则识别完成"
+    return reason
+
+
 def _show_manual_diagnosis_details(triangle: pd.DataFrame) -> None:
     detail_items = [
         ("negative_rows", "原始负值明细"),
@@ -663,7 +672,7 @@ with tabs[0]:
     c4.metric("实际数据 Sheet", getattr(load_result, "source_sheet_name", "") or sheet_name)
     c5, c6 = st.columns(2)
     c5.metric("识别来源", "DeepSeek API" if getattr(load_result, "recognition_source", "rules") == "api" else ("手动确认" if getattr(load_result, "recognition_source", "rules") == "manual_mapping" else "本地规则"))
-    c6.metric("说明", getattr(load_result, "recognition_reason", "") or "规则识别完成")
+    c6.metric("说明", _display_recognition_reason(load_result))
 
     st.write(
         "系统会先扫描说明行、空行之后的有效表格区域；本地规则失败或置信度偏低且启用 API 时，"
