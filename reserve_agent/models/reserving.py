@@ -65,8 +65,6 @@ def compare_methods(
             on="Accident Year",
             how="left",
         )
-    comparison["Selected Ultimate"] = comparison[["Chain Ladder Ultimate", "BF Ultimate Loss"]].mean(axis=1)
-    comparison["Selected Reserve"] = comparison[["Chain Ladder Reserve", "BF Reserve"]].mean(axis=1)
     return comparison
 
 
@@ -94,8 +92,6 @@ def run_reserving_models(
         "total_cl_reserve": float(comparison["Chain Ladder Reserve"].sum()),
         "total_elr_reserve": float(comparison["ELR Reserve"].sum()),
         "total_bf_reserve": float(comparison["BF Reserve"].sum()),
-        "total_selected_reserve": float(comparison["Selected Reserve"].sum()),
-        "total_selected_ultimate": float(comparison["Selected Ultimate"].sum()),
     }
     diagnostics.update(mack_result.diagnostics)
 

@@ -16,6 +16,7 @@ from reserve_agent.data.detector import (
 )
 from reserve_agent.data.table_scanner import (
     TableRegion,
+    build_sheet_structure_summary,
     find_candidate_table_regions,
     slice_region_with_header,
 )
@@ -49,6 +50,7 @@ class DetectedTable:
     format_name: ExcelFormat
     recognition_source: str = "rules"
     recognition_reason: str = ""
+    confidence: float = 1.0
 
 
 @dataclass
@@ -62,6 +64,8 @@ class ExcelLoadResult:
     requested_sheet_name: str = ""
     source_sheet_name: str = ""
     recognition_source: str = "rules"
+    recognition_reason: str = ""
+    structure_summary: dict | None = None
     warnings: tuple[str, ...] = ()
 
 
@@ -95,6 +99,7 @@ def choose_default_sheet(sheet_names: list[str]) -> int:
 
     if not sheet_names:
         return 0
+
     for index, name in enumerate(sheet_names):
         if _base_sheet_name(name) == "claims data":
             return index
@@ -206,10 +211,9 @@ def load_exposure_data(file_path: str | Path, sheet_name: str = "Exposure data (
     candidates = []
     for year_col in ["Policy year.1", "Policy year"]:
         for exposure_col in [
-            "Turnover (拢m) - revalued @ 4% p.a.",
+            "Turnover (£m) - revalued @ 4% p.a.",
             "Turnover (x 1€m) - revalued @ 4% p.a.",
             "Turnover (x 1鈧琺) - revalued @ 4% p.a.",
-            "Turnover (x 1閳х惡) - revalued @ 4% p.a.",
             "Employee Numbers",
             "Employee Numbers.1",
         ]:
@@ -285,9 +289,6 @@ def _generic_quality_report(
         "triangle": "事故年 x 发展期三角形",
         "long_table": "事故年/发展期/金额长表",
         "claims_snapshot": "赔案快照明细",
-        "policy_data": "保单数据",
-        "exposure_data": "暴露量数据",
-        "unknown": "未知格式",
     }
     notes = [f"系统自动识别为{format_labels.get(format_name, format_name)}格式。"]
     if any("delayday" in normalise_label(column) for column in source_table.columns):
@@ -327,7 +328,18 @@ def scan_excel_sheet(file_path: str | Path, sheet_name: str) -> tuple[pd.DataFra
     candidates = []
     for region in regions:
         table = slice_region_with_header(raw, region)
-        candidates.append(DetectedTable(region=region, table=table, format_name=detect_excel_format(table)))
+        format_name = detect_excel_format(table)
+        confidence = min(max(region.score / 120.0, 0.0), 1.0)
+        candidates.append(
+            DetectedTable(
+                region=region,
+                table=table,
+                format_name=format_name,
+                recognition_source="rules",
+                recognition_reason=f"规则扫描得分 {region.score:.1f}。",
+                confidence=confidence,
+            )
+        )
     return raw, candidates
 
 
@@ -363,14 +375,16 @@ def _api_assisted_candidate(
     measure: str,
     is_cumulative: bool,
     api_key: str,
+    raw_df: pd.DataFrame | None = None,
 ) -> tuple[DetectedTable, pd.DataFrame]:
     from reserve_agent.data.api_detector import apply_api_mapping, request_api_detection
 
     result = request_api_detection(
-        [candidate.table for candidate in candidates],
+        candidates,
         sheet_name=sheet_name,
         measure=measure,
         api_key=api_key,
+        raw_df=raw_df,
     )
     original = candidates[result.candidate_index]
     mapped = DetectedTable(
@@ -379,8 +393,12 @@ def _api_assisted_candidate(
         format_name=result.format_name,
         recognition_source="api",
         recognition_reason=result.reason,
+        confidence=result.confidence,
     )
-    adapted = _adapt_first_candidate([mapped], measure=measure, is_cumulative=is_cumulative)
+    effective_is_cumulative = is_cumulative if result.is_cumulative is None else result.is_cumulative
+    adapted = _adapt_first_candidate(
+        [mapped], measure=result.selected_measure or measure, is_cumulative=effective_is_cumulative
+    )
     if adapted is None:
         raise UnsupportedExcelFormatError("API 返回的字段映射无法转换为有效赔付三角。")
     return adapted
@@ -418,41 +436,53 @@ def load_excel_to_triangle(
     requested_sheet = sheet_name
     warnings: list[str] = []
     api_error: str | None = None
-    _, requested_candidates = scan_excel_sheet(file_path, requested_sheet)
-    adapted = _adapt_first_candidate(requested_candidates, measure=measure, is_cumulative=is_cumulative)
+    requested_raw, requested_candidates = scan_excel_sheet(file_path, requested_sheet)
+    requested_summary = build_sheet_structure_summary(requested_raw, requested_sheet, requested_candidates)
+    adapted = _adapt_first_candidate(
+        requested_candidates, measure=measure, is_cumulative=is_cumulative
+    )
 
-    locally_recognised = any(candidate.format_name != "unknown" for candidate in requested_candidates)
-    if adapted is None and api_key and not locally_recognised:
+    locally_recognised = any(
+        candidate.format_name != "unknown" for candidate in requested_candidates
+    )
+    low_confidence_rule = adapted is not None and adapted[0].confidence < 0.80
+    if api_key and ((adapted is None and not locally_recognised) or low_confidence_rule):
         try:
-            adapted = _api_assisted_candidate(
+            api_adapted = _api_assisted_candidate(
                 requested_candidates,
                 sheet_name=requested_sheet,
                 measure=measure,
                 is_cumulative=is_cumulative,
                 api_key=api_key,
+                raw_df=requested_raw,
             )
+            adapted = api_adapted
             requested_candidates.append(adapted[0])
-            warnings.append("本地规则未能完成字段映射，本次使用 DeepSeek API 辅助识别。")
+            if low_confidence_rule:
+                warnings.append("本地规则置信度偏低，本次使用 DeepSeek API 辅助复核字段映射。")
+            else:
+                warnings.append("本地规则未能完成字段映射，本次使用 DeepSeek API 辅助识别。")
         except Exception as exc:
             api_error = str(exc)
+            if low_confidence_rule:
+                warnings.append(f"DeepSeek API 辅助复核失败，已退回本地规则识别：{exc}")
 
     source_sheet = requested_sheet
     candidates = requested_candidates
     if adapted is None and fallback_to_other_sheets:
         for candidate_sheet in _fallback_sheet_order(list_excel_sheets(file_path), requested_sheet):
             try:
-                _, other_candidates = scan_excel_sheet(file_path, candidate_sheet)
+                other_raw, other_candidates = scan_excel_sheet(file_path, candidate_sheet)
             except Exception:
                 continue
             other_adapted = _adapt_first_candidate(
-                other_candidates,
-                measure=measure,
-                is_cumulative=is_cumulative,
+                other_candidates, measure=measure, is_cumulative=is_cumulative
             )
             if other_adapted is not None:
                 adapted = other_adapted
                 source_sheet = candidate_sheet
                 candidates = other_candidates
+                requested_summary = build_sheet_structure_summary(other_raw, candidate_sheet, other_candidates)
                 warnings.append(
                     f"所选工作表“{requested_sheet}”不能直接形成赔付发展三角，"
                     f"系统已自动改用“{candidate_sheet}”。"
@@ -481,6 +511,7 @@ def load_excel_to_triangle(
         )
 
     selected, triangle = adapted
+
     if selected.format_name == "claims_snapshot":
         try:
             quality = quality_report(selected.table, triangle)
@@ -499,14 +530,20 @@ def load_excel_to_triangle(
         requested_sheet_name=requested_sheet,
         source_sheet_name=source_sheet,
         recognition_source=selected.recognition_source,
+        recognition_reason=selected.recognition_reason,
+        structure_summary=requested_summary,
         warnings=tuple(warnings),
     )
 
 
 def triangle_to_display(triangle: pd.DataFrame) -> pd.DataFrame:
     display = triangle.copy()
+    # 手动映射模式会在 triangle.attrs 中保存诊断明细 DataFrame；
+    # pandas 在部分展示/拼接场景会比较 attrs，DataFrame 之间的比较可能触发
+    # “truth value is ambiguous”。展示用副本不需要这些元数据，直接清空更稳。
+    display.attrs = {}
     display.index.name = "Accident Year"
-    display.columns = [f"Dev {int(c)}" for c in display.columns]
+    display.columns = [f"Dev {int(float(c))}" for c in display.columns]
     return display
 
 

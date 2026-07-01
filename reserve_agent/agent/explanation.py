@@ -29,37 +29,44 @@ def generate_data_diagnosis(report: DataQualityReport) -> list[str]:
 
 
 def recommend_model(outputs: ReservingOutputs) -> str:
+    diag = outputs.diagnostics
     total_cl = outputs.diagnostics["total_cl_reserve"]
     total_bf = outputs.diagnostics["total_bf_reserve"]
     total_elr = outputs.diagnostics["total_elr_reserve"]
     latest = outputs.diagnostics["total_latest"]
-    reserve_ratio = outputs.diagnostics["total_selected_reserve"] / latest if latest else 0.0
+    total_mack = float(diag.get("total_mack_reserve", 0.0))
+    model_reserves = [value for value in [total_cl, total_bf, total_elr, total_mack] if pd.notna(value)]
+    reserve_ratio = max(model_reserves) / latest if latest and model_reserves else 0.0
 
     if reserve_ratio > 0.35:
-        return "未决准备金占已观测赔款比例较高，建议以 Bornhuetter-Ferguson 作为主要参考，并保留 Chain Ladder 作为经验发展模式校验。"
+        return "未决准备金相对已观测赔款比例较高，最终选择应重点复核业务成熟度、大额赔案、尾部发展和 BF/ELR 先验假设。"
     if total_cl > total_bf * 1.4:
         return "Chain Ladder 结果明显高于 BF，说明近期发展模式对最终赔款较敏感，建议复核大额赔案和最新事故年的成熟度。"
     if total_elr > max(total_cl, total_bf) * 1.5:
         return "ELR 结果偏高，可能反映先验赔付率或暴露基准较保守，应结合业务定价假设调整。"
-    return "Chain Ladder 与 BF 差异处于可解释范围内，初版建议采用二者均值作为展示口径。"
+    return "各模型差异处于可解释范围内，但系统不自动给出固定最终选择；最终准备金应由精算判断综合模型、数据质量和业务信息确定。"
 
 
 def generate_result_summary(outputs: ReservingOutputs) -> list[str]:
     diag = outputs.diagnostics
     comparison = outputs.comparison.copy()
-    total_selected = comparison["Selected Reserve"].sum()
-    comparison["Reserve Share"] = comparison["Selected Reserve"] / total_selected if total_selected else 0.0
-    max_year = int(comparison.sort_values("Selected Reserve", ascending=False).iloc[0]["Accident Year"])
-    max_share = float(comparison["Reserve Share"].max())
+    reserve_columns = [
+        column
+        for column in ["Chain Ladder Reserve", "ELR Reserve", "BF Reserve", "Mack Reserve"]
+        if column in comparison.columns
+    ]
+    reserve_totals = {
+        column: float(pd.to_numeric(comparison[column], errors="coerce").sum())
+        for column in reserve_columns
+    }
+    highest_method = max(reserve_totals, key=reserve_totals.get) if reserve_totals else ""
+    lowest_method = min(reserve_totals, key=reserve_totals.get) if reserve_totals else ""
 
     summary = [
         f"截至当前评估期，累计已观测赔款约为 {format_currency(diag['total_latest'])}。",
         f"Chain Ladder 估计准备金约为 {format_currency(diag['total_cl_reserve'])}，BF 估计准备金约为 "
         f"{format_currency(diag['total_bf_reserve'])}。",
-        f"系统选取的展示口径为 Chain Ladder 与 BF 的均值，合计准备金约为 "
-        f"{format_currency(diag['total_selected_reserve'])}，对应最终赔款约为 "
-        f"{format_currency(diag['total_selected_ultimate'])}。",
-        f"准备金贡献最高的事故年为 {max_year}，占总展示准备金约 {max_share:.1%}，应重点解释其赔款成熟度和发展因子影响。",
+        f"Expected Loss Ratio 估计准备金约为 {format_currency(diag['total_elr_reserve'])}。",
     ]
 
     if outputs.mack_diagnostics:
@@ -69,6 +76,12 @@ def generate_result_summary(outputs: ReservingOutputs) -> list[str]:
             f"{format_currency(outputs.mack_diagnostics.get('total_mack_standard_error', 0.0))}，95% 准备金区间约为 "
             f"{format_currency(outputs.mack_diagnostics.get('mack_95_lower', 0.0))}-"
             f"{format_currency(outputs.mack_diagnostics.get('mack_95_upper', 0.0))}。"
+        )
+
+    if highest_method and lowest_method and highest_method != lowest_method:
+        summary.append(
+            f"各模型总准备金最高口径为 {highest_method}（{format_currency(reserve_totals[highest_method])}），"
+            f"最低口径为 {lowest_method}（{format_currency(reserve_totals[lowest_method])}）。"
         )
 
     if outputs.expected_lr_sensitivity is not None and not outputs.expected_lr_sensitivity.empty:
@@ -87,6 +100,7 @@ def generate_result_summary(outputs: ReservingOutputs) -> list[str]:
             f"{format_currency(factor_low)}-{format_currency(factor_high)}。"
         )
 
+    summary.append("系统不自动生成固定最终准备金，也不会把任何模型均值作为默认结论。")
     summary.append(recommend_model(outputs))
     return summary
 
