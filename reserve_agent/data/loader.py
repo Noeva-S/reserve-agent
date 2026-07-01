@@ -336,7 +336,7 @@ def scan_excel_sheet(file_path: str | Path, sheet_name: str) -> tuple[pd.DataFra
                 table=table,
                 format_name=format_name,
                 recognition_source="rules",
-                recognition_reason=f"规则扫描得分 {region.score:.1f}。",
+                recognition_reason="本地规则根据表头、字段类型和候选区域完成识别。",
                 confidence=confidence,
             )
         )

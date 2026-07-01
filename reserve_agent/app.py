@@ -337,7 +337,7 @@ def _render_visualizations(triangle: pd.DataFrame, outputs, selected_measure: st
         fig_ultimate = px.line(long_ultimate, x="事故年", y="金额", color="指标", markers=True)
         fig_ultimate.update_layout(height=460, margin=dict(l=40, r=40, t=30, b=40), legend_title_text="指标")
         st.plotly_chart(fig_ultimate, use_container_width=True)
-        st.caption("该图比较当前累计赔款与各模型最终赔款估计。系统不再自动生成固定的最终选择口径。")
+        st.caption("该图比较当前累计赔款与各模型最终赔款估计。")
 
     if outputs.mack is not None and not outputs.mack.empty:
         st.markdown("### Mack 链梯法准备金区间图")
@@ -678,7 +678,6 @@ with tabs[0]:
                         "候选编号": item.get("candidate_index"),
                         "表头行": item.get("header_row_excel"),
                         "规则格式": item.get("rule_format"),
-                        "规则分数": item.get("rule_score"),
                         "数据行数": item.get("row_count"),
                         "非空列数": item.get("non_empty_cols"),
                         "候选列名": ", ".join(map(str, item.get("candidate_columns", [])[:12])),
@@ -780,6 +779,7 @@ with tabs[4]:
     st.subheader("实时问答 Agent")
     st.caption(
         "可以继续追问当前模型结果、Mack 不确定性、敏感性分析，以及上传 Excel 中各 sheet 的信息。"
+        "目前可保留 20 轮对话结果，请注意及时保存。"
     )
     try:
         workbook_context = build_workbook_context(

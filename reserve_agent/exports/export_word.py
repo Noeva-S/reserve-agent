@@ -331,7 +331,6 @@ def build_word_report(
                         "Index": item.get("candidate_index"),
                         "Header Row": item.get("header_row_excel"),
                         "Rule Format": item.get("rule_format"),
-                        "Rule Score": item.get("rule_score"),
                         "Rows": item.get("row_count"),
                         "Columns": ", ".join(map(str, item.get("candidate_columns", [])[:8])),
                     }

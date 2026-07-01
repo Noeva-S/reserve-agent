@@ -68,7 +68,6 @@ def _detection_to_frame(detection: Any | None) -> pd.DataFrame:
                             "Header Row (0-based)": item.get("header_row"),
                             "Header Row (Excel)": item.get("header_row_excel"),
                             "Rule Format": item.get("rule_format"),
-                            "Rule Score": item.get("rule_score"),
                             "Rows": item.get("row_count"),
                             "Non-empty Rows": item.get("non_empty_rows"),
                             "Non-empty Cols": item.get("non_empty_cols"),
