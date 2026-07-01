@@ -279,8 +279,6 @@ def _detection_rows(
         rows.append(("表头行", f"Excel 第 {header_row + 1} 行（内部索引 {header_row}）"))
     if recognition_source:
         rows.append(("识别来源", "DeepSeek API" if recognition_source == "api" else "本地规则"))
-    if recognition_reason:
-        rows.append(("识别说明", recognition_reason))
     rows.append(("建模口径", measure))
     return rows
 

@@ -187,7 +187,6 @@ def _show_detection_card(detected_info: dict) -> None:
                 {"识别项": "口径列", "识别结果": detected_info.get("type_col_name") or "无"},
                 {"识别项": "目标口径", "识别结果": detected_info.get("measure_col_value") or "无"},
                 {"识别项": "累计/增量", "识别结果": "累计" if detected_info.get("is_cumulative") else "增量"},
-                {"识别项": "识别理由", "识别结果": detected_info.get("reason") or "无"},
             ]
         )
         st.dataframe(field_df, use_container_width=True, hide_index=True)
@@ -201,15 +200,6 @@ def _show_issues(issues) -> None:
             st.warning(issue.message)
         else:
             st.info(issue.message)
-
-
-def _display_recognition_reason(load_result) -> str:
-    reason = str(getattr(load_result, "recognition_reason", "") or "").strip()
-    if not reason:
-        return "规则识别完成"
-    if "规则扫描得分" in reason or "规则分数" in reason or "Rule Score" in reason:
-        return "本地规则识别完成"
-    return reason
 
 
 def _show_manual_diagnosis_details(triangle: pd.DataFrame) -> None:
@@ -665,19 +655,12 @@ with tabs[0]:
     st.subheader("Excel 识别与映射结果")
     for warning in getattr(load_result, "warnings", ()):  # type: ignore[arg-type]
         st.warning(warning)
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("识别格式", getattr(load_result, "format_name", ""))
     c2.metric("表头行", str(getattr(getattr(load_result, "region", None), "header_row", 0) + 1))
     c3.metric("候选区域数", str(len(getattr(load_result, "candidates", [])) or getattr(getattr(load_result, "structure_summary", {}), "candidate_count", 1)))
     c4.metric("实际数据 Sheet", getattr(load_result, "source_sheet_name", "") or sheet_name)
-    c5, c6 = st.columns(2)
     c5.metric("识别来源", "DeepSeek API" if getattr(load_result, "recognition_source", "rules") == "api" else ("手动确认" if getattr(load_result, "recognition_source", "rules") == "manual_mapping" else "本地规则"))
-    c6.metric("说明", _display_recognition_reason(load_result))
-
-    st.write(
-        "系统会先扫描说明行、空行之后的有效表格区域；本地规则失败或置信度偏低且启用 API 时，"
-        "只提交结构摘要、列名、类型统计和少量脱敏样本进行辅助识别。手动模式下，字段映射确认面板的结果会覆盖自动识别结果。"
-    )
     if getattr(load_result, "structure_summary", None):
         with st.expander("查看候选表结构摘要 / 手动映射记录"):
             summary_rows = []

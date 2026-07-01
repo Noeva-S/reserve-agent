@@ -42,7 +42,6 @@ def _processing_log(
     expected_lr: float,
     is_cumulative: bool,
     recognition_source: str,
-    recognition_reason: str,
     warnings: Iterable[str],
     quality_notes: Iterable[str],
     validation_rows: list[dict[str, str]],
@@ -58,7 +57,6 @@ def _processing_log(
         f"Expected LR: {expected_lr:.4f}",
         f"Long-table cumulative flag from UI: {is_cumulative}",
         f"Recognition source: {recognition_source or 'rules'}",
-        f"Recognition reason: {recognition_reason or 'N/A'}",
         "",
         "Warnings:",
     ]
@@ -115,7 +113,6 @@ def render_download_panel(
         expected_lr=expected_lr,
         is_cumulative=is_cumulative,
         recognition_source=getattr(load_result, "recognition_source", "rules"),
-        recognition_reason=getattr(load_result, "recognition_reason", ""),
         warnings=getattr(load_result, "warnings", ()),
         quality_notes=getattr(quality, "notes", []),
         validation_rows=validation_frame_rows,
