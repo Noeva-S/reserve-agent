@@ -6,11 +6,18 @@ from reserve_agent.data.loader import DataQualityReport
 from reserve_agent.models.reserving import ReservingOutputs, format_currency
 
 
+def _range_text(values: list[int] | tuple[int, ...] | None) -> str:
+    cleaned = [value for value in (values or []) if pd.notna(value)]
+    if not cleaned:
+        return "未知"
+    return f"{min(cleaned)}-{max(cleaned)}"
+
+
 def generate_data_diagnosis(report: DataQualityReport) -> list[str]:
     messages = [
         f"系统读取到 {report.row_count} 行赔案度量记录，涉及 {report.claim_count} 个赔案或事故年。",
-        f"事故年范围为 {min(report.accident_years)}-{max(report.accident_years)}，评估年范围为 "
-        f"{min(report.valuation_years)}-{max(report.valuation_years)}。",
+        f"事故年范围为 {_range_text(report.accident_years)}，评估年范围为 "
+        f"{_range_text(report.valuation_years)}。",
     ]
     if report.missing_values > 0:
         messages.append(

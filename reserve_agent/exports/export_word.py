@@ -31,6 +31,13 @@ def _format_amount(value: object) -> str:
     return f"{number:,.0f}"
 
 
+def _range_text(values: list[int] | tuple[int, ...] | None) -> str:
+    cleaned = [value for value in (values or []) if pd.notna(value)]
+    if not cleaned:
+        return "未知"
+    return f"{min(cleaned)}-{max(cleaned)}"
+
+
 def _as_frame(value: Any) -> pd.DataFrame:
     if value is None:
         return pd.DataFrame()
@@ -336,7 +343,7 @@ def build_word_report(
     if quality and outputs is not None:
         document.add_heading("2. 评估概览", level=1)
         diag = outputs.diagnostics
-        ay_range = f"{min(quality.accident_years)}-{max(quality.accident_years)}" if quality.accident_years else "未知"
+        ay_range = _range_text(quality.accident_years)
         document.add_paragraph(
             f"系统读取 {quality.row_count:,} 行数据，事故年范围为 {ay_range}。"
             f"累计已观察赔款约 {_format_amount(diag['total_latest'])}，"
@@ -357,7 +364,7 @@ def build_word_report(
         )
 
         document.add_heading("3. 数据质量诊断", level=1)
-        valuation_range = f"{min(quality.valuation_years)}-{max(quality.valuation_years)}" if quality.valuation_years else "未知"
+        valuation_range = _range_text(quality.valuation_years)
         _add_key_value_table(
             document,
             [

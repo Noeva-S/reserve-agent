@@ -6,6 +6,8 @@ import unittest
 
 from docx import Document
 
+from reserve_agent.agent.explanation import generate_data_diagnosis
+from reserve_agent.data.loader import DataQualityReport
 from reserve_agent.data.loader import load_excel_to_triangle
 from reserve_agent.data_processing import load_exposure_data
 from reserve_agent.explanation import generate_agent_explanation, generate_method_notes
@@ -14,6 +16,22 @@ from reserve_agent.reserving import run_reserving_models
 
 
 class WordReportTests(unittest.TestCase):
+    def test_data_diagnosis_handles_empty_year_ranges(self) -> None:
+        report = DataQualityReport(
+            row_count=10,
+            claim_count=0,
+            accident_years=[],
+            valuation_years=[],
+            missing_values=0,
+            negative_amount_cells=0,
+            zero_claim_rows=0,
+            notes=["当前工作表可能不是标准赔案建模数据。"],
+        )
+
+        messages = generate_data_diagnosis(report)
+
+        self.assertTrue(any("未知" in message for message in messages))
+
     def test_complete_word_report_can_be_opened(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         workbook = project_root / "Chapter 13a - IBNR (triangle-based) v4.xlsx"
